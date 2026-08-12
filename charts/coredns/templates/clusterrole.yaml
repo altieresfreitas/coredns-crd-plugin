@@ -22,3 +22,10 @@ rules:
   verbs:
   - list
   - watch
+- apiGroups:
+  - k8gb.io
+  resources:
+  - zonedelegations
+  verbs:
+  - list
+  - watch

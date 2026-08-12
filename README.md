@@ -107,7 +107,83 @@ labels:
 For more information about balancing, please visit our [go-weight-shuffling](https://github.com/k8gb-io/go-weight-shuffling
 ) module.
 
+### Reactive cross-cluster resolution
+
+In a k8gb setup where several clusters are authoritative for the **same**
+delegated zone (so an app can migrate freely between clusters), a recursive
+resolver may send a query to a cluster that does not host the requested app. By
+default that cluster answers an authoritative `NXDOMAIN` and resolution fails.
+
+The `reactive` option makes `k8s_crd` resolve such local misses live from the
+peer clusters instead of returning `NXDOMAIN`:
+
+```text
+k8s_crd example.com {
+    reactive on
+    reactiveself eu          # geotag identifying THIS cluster, matched as an
+                             # exact dash-delimited segment of the peer NS names
+                             # (recommended, so the local cluster is not queried)
+    reactiveport 53          # port the peer CoreDNS servers listen on (default 53)
+    reactivetimeout 2s       # per-peer query timeout (default 2s)
+    reactivettl 30           # TTL of the synthesized A records (default 30)
+    reactivecachettl 15s     # positive cache TTL (default 15s)
+    reactivenegttl 5s        # negative cache TTL (default 5s)
+    ...
+}
+```
+
+How it works:
+
+* It only runs on a **local miss** (the gateway produced no answer) for `A`
+  queries, so local hits are never affected.
+* Peer CoreDNS servers are discovered from the k8gb `ZoneDelegation` custom
+  resource (`status.dnsServers`). The zone a host belongs to is matched by DNS
+  suffix, and the local cluster is excluded via the `reactiveself` geotag.
+* Peers are queried for the full `<host>` record and the **first non-empty
+  answer wins** (early return). Because every authoritative peer already serves
+  the fully-aggregated, load-balanced target set, one peer that has the GSLB is
+  enough — there is no need to fan out to all of them. Querying `<host>` (rather
+  than the cluster-local `localtargets-<host>`) is what makes a single peer's
+  answer complete. Peers are shuffled to spread the load across the fleet, so
+  this scales to many clusters without querying every one on each miss.
+* Cross-cluster loops are prevented with a marker: reactive probes are sent with
+  the DNS `CheckingDisabled` (CD) bit set, and the plugin never reactivates a
+  query that already carries CD. So if two clusters both miss the host they do
+  not query each other forever — the probe short-circuits to `NXDOMAIN`.
+* Results are cached (positive and negative) and concurrent lookups for the
+  same host are coalesced.
+* While the `ZoneDelegation` cache is still warming up the plugin returns
+  `SERVFAIL` (not `NXDOMAIN`) so recursive resolvers fail over to a sibling
+  cluster's name server instead of caching a false negative.
+
 ## Build
+
+### Container image
+
+The `Makefile` compiles the CoreDNS binary and builds the container image
+defined in the `Dockerfile`:
+
+```shell
+# build binary + image (uses docker by default)
+make image REGISTRY=<your-registry> BIN=k8s_crd TAG=<tag>
+```
+
+To build manually (e.g. with podman, or to control the target platform):
+
+```shell
+# 1. compile the CoreDNS binary for the target platform (linux/amd64)
+GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o coredns cmd/coredns.go
+
+# 2. build the image (the Dockerfile just copies the ./coredns binary)
+podman build --platform linux/amd64 -t <registry>/k8s_crd:<tag> .
+#   or: docker build --platform linux/amd64 -t <registry>/k8s_crd:<tag> .
+
+# 3. push it to your registry
+podman push <registry>/k8s_crd:<tag>
+
+# verify the plugin is compiled in
+podman run --rm --platform linux/amd64 <registry>/k8s_crd:<tag> -plugins | grep k8s_crd
+```
 
 ### With compile-time configuration file
 

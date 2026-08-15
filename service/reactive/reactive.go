@@ -114,7 +114,11 @@ func (s *Reactive) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Ms
 	}
 	plog.Infof("miss for %s: querying %d peer(s) for localtargets", host, len(peers))
 
-	targets := s.resolve(ctx, host, peers)
+	targets, err := s.resolve(ctx, host, peers)
+	if err != nil {
+		plog.Errorf("failed to contact peer clusters for %s: %s, returning SERVFAIL", host, err)
+		return s.writeServfail(w, r)
+	}
 	if len(targets) == 0 {
 		// No peer serves this host: it genuinely does not exist. Keep NXDOMAIN.
 		plog.Infof("miss for %s: no peer returned targets, keeping NXDOMAIN", host)
@@ -152,16 +156,19 @@ func (s *Reactive) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Ms
 
 // resolve returns the targets for host, using the cache and coalescing
 // concurrent lookups for the same host with singleflight.
-func (s *Reactive) resolve(ctx context.Context, host string, peers []Peer) []string {
+func (s *Reactive) resolve(ctx context.Context, host string, peers []Peer) ([]string, error) {
 	if v, ok := s.cache.get(host); ok {
-		return v
+		return v, nil
 	}
-	v, _, _ := s.sf.Do(host, func() (interface{}, error) {
+	v, err, _ := s.sf.Do(host, func() (interface{}, error) {
 		// Another goroutine may have populated the cache while we waited.
 		if cached, ok := s.cache.get(host); ok {
 			return cached, nil
 		}
-		targets := s.queryPeers(ctx, host, peers)
+		targets, err := s.queryPeers(ctx, host, peers)
+		if err != nil {
+			return nil, err
+		}
 		ttl := s.opts.PositiveTTL
 		if len(targets) == 0 {
 			ttl = s.opts.NegativeTTL
@@ -169,10 +176,13 @@ func (s *Reactive) resolve(ctx context.Context, host string, peers []Peer) []str
 		s.cache.set(host, targets, ttl)
 		return targets, nil
 	})
-	if v == nil {
-		return nil
+	if err != nil {
+		return nil, err
 	}
-	return v.([]string)
+	if v == nil {
+		return nil, nil
+	}
+	return v.([]string), nil
 }
 
 // queryPeers asks peers for the full <host> record and returns the first
@@ -183,17 +193,25 @@ func (s *Reactive) resolve(ctx context.Context, host string, peers []Peer) []str
 // hitting the same one first, and each peer gets its own bounded timeout.
 // A peer that is up but lacks the host answers NXDOMAIN in ~1 RTT (cheap), so
 // traversing misses is fast; only genuinely down peers cost the full timeout.
-func (s *Reactive) queryPeers(ctx context.Context, host string, peers []Peer) []string {
+func (s *Reactive) queryPeers(ctx context.Context, host string, peers []Peer) ([]string, error) {
 	shuffled := make([]Peer, len(peers))
 	copy(shuffled, peers)
 	rand.Shuffle(len(shuffled), func(i, j int) {
 		shuffled[i], shuffled[j] = shuffled[j], shuffled[i]
 	})
 
+	var lastErr error
+	var contactedAny bool
+
 	for _, p := range shuffled {
 		queryCtx, cancel := context.WithTimeout(ctx, s.opts.Timeout)
-		ips := s.querier.Query(queryCtx, host, p)
+		ips, err := s.querier.Query(queryCtx, host, p)
 		cancel()
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		contactedAny = true
 		if len(ips) == 0 {
 			continue
 		}
@@ -208,9 +226,13 @@ func (s *Reactive) queryPeers(ctx context.Context, host string, peers []Peer) []
 			out = append(out, ip)
 		}
 		plog.Infof("reactively resolved %s from peer %s (%s)", host, p.Name, p.IP)
-		return out
+		return out, nil
 	}
-	return nil
+
+	if len(peers) > 0 && !contactedAny {
+		return nil, lastErr
+	}
+	return nil, nil
 }
 
 // writeServfail replaces the current response with SERVFAIL.

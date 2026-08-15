@@ -30,7 +30,7 @@ import (
 // returns the discovered A record IPs (the peer's already-aggregated,
 // load-balanced answer).
 type Querier interface {
-	Query(ctx context.Context, fqdn string, peer Peer) []string
+	Query(ctx context.Context, fqdn string, peer Peer) ([]string, error)
 }
 
 // dnsQuerier is the default Querier, sending DNS queries over the network.
@@ -43,7 +43,7 @@ func newDNSQuerier(port int, client *dns.Client) *dnsQuerier {
 	return &dnsQuerier{client: client, port: port}
 }
 
-func (q *dnsQuerier) Query(ctx context.Context, fqdn string, peer Peer) []string {
+func (q *dnsQuerier) Query(ctx context.Context, fqdn string, peer Peer) ([]string, error) {
 	m := new(dns.Msg)
 	m.SetQuestion(dns.Fqdn(fqdn), dns.TypeA)
 	// Loop guard: mark this as a reactive probe using an EDNS0 private option (RFC 6891).
@@ -57,7 +57,7 @@ func (q *dnsQuerier) Query(ctx context.Context, fqdn string, peer Peer) []string
 	resp, _, err := q.client.ExchangeContext(ctx, m, addr)
 	if err != nil {
 		plog.Warningf("failed to query peer %s (%s) for %s: %s", peer.Name, addr, fqdn, err)
-		return nil
+		return nil, err
 	}
 	var ips []string
 	for _, rr := range resp.Answer {
@@ -65,5 +65,5 @@ func (q *dnsQuerier) Query(ctx context.Context, fqdn string, peer Peer) []string
 			ips = append(ips, a.A.String())
 		}
 	}
-	return ips
+	return ips, nil
 }

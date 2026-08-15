@@ -22,13 +22,13 @@ DNS Query (Client)
 │     • Hit: Writes A/TXT records into container writer       │
 │     • Miss: Writes SOA + NXDOMAIN into container writer     │
 │                                                             │
-│  2. WRR (service/wrr) [Optional]                            │
-│     • Applies Weight-Round-Robin / Geo shuffling on answers │
-│                                                             │
-│  3. Reactive (service/reactive) [Optional]                  │
+│  2. Reactive (service/reactive) [Optional]                  │
 │     • Triggers only on local misses (NXDOMAIN) for Type A   │
 │     • Queries peer CoreDNS servers in sibling clusters      │
 │     • Synthesizes and caches aggregated A records           │
+│                                                             │
+│  3. WRR (service/wrr) [Optional]                            │
+│     • Applies Weight-Round-Robin / Geo shuffling on answers │
 └─────────────────────────────────────────────────────────────┘
        │
        ▼

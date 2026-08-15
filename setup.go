@@ -80,11 +80,8 @@ func setup(c *caddy.Controller) error {
 	}
 	gwopts := gateway.NewGatewayOpts(rawArgs.annotation, rawArgs.apex, rawArgs.geoDataFilePath, geoFields, rawArgs.ttl, rawArgs.negttl, rawArgs.zones)
 	_ = k8sCRD.container.Register(gateway.NewGateway(gwopts))
-	if rawArgs.loadbalance == weightRoundRobin {
-		_ = k8sCRD.container.Register(wrr.NewWeightRoundRobin())
-	}
-	// The reactive resolver must run last: it only acts on a local miss and
-	// overwrites the gateway's NXDOMAIN with targets resolved live from peers.
+	// The reactive resolver must run before WRR so that any targets resolved live
+	// from peers can still be load-balanced/shuffled by WRR.
 	if rawArgs.reactive {
 		cfg, _, cfgErr := configFactory(configType(rawArgs.kubecontroller))
 		if cfgErr != nil {
@@ -97,6 +94,9 @@ func setup(c *caddy.Controller) error {
 		peerSource := reactive.NewZoneDelegationSource(context.Background(), dynClient, rawArgs.reactiveOpts.SelfGeoTag)
 		_ = k8sCRD.container.Register(reactive.NewReactive(rawArgs.reactiveOpts, peerSource))
 		log.Infof("reactive cross-cluster resolver enabled (self=%q)", rawArgs.reactiveOpts.SelfGeoTag)
+	}
+	if rawArgs.loadbalance == weightRoundRobin {
+		_ = k8sCRD.container.Register(wrr.NewWeightRoundRobin())
 	}
 	dnsserver.GetConfig(c).AddPlugin(func(next plugin.Handler) plugin.Handler {
 		k8sCRD.Next = next

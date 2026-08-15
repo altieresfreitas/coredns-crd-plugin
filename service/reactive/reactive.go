@@ -69,11 +69,16 @@ func (s *Reactive) Name() string { return "reactive" }
 func (s *Reactive) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg) (int, error) {
 	state := request.Request{W: w, Req: r}
 
-	// Loop guard: a query carrying CheckingDisabled is a reactive probe sent by
+	// Loop guard: a query carrying our EDNS0 reactive probe option was sent by
 	// a sibling cluster's reactive service (see querier.go). Never reactivate it,
 	// otherwise two clusters that both miss the host would query each other
-	// forever. This bit is preserved by dns.Msg.SetReply through the pipeline.
-	if r.CheckingDisabled {
+	// forever. We check both the incoming message r and any original request
+	// exposed by the container response writer.
+	origReq := r
+	if rg, ok := w.(interface{ Request() *dns.Msg }); ok && rg.Request() != nil {
+		origReq = rg.Request()
+	}
+	if isReactiveProbe(origReq) || isReactiveProbe(r) {
 		return dns.RcodeSuccess, nil
 	}
 

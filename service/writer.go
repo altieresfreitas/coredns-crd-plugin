@@ -29,15 +29,22 @@ import (
 // The containerResponseWriter wraps any ResponseWriter and add message function which provides Written message, so the
 // dns.Msg is accessible within the container pipeline.
 type containerResponseWriter struct {
-	w dns.ResponseWriter
-	m *dns.Msg
+	w   dns.ResponseWriter
+	req *dns.Msg
+	m   *dns.Msg
 }
 
 func newContainerWriter(w dns.ResponseWriter, m *dns.Msg) *containerResponseWriter {
 	return &containerResponseWriter{
-		w: w,
-		m: m,
+		w:   w,
+		req: m,
+		m:   m,
 	}
+}
+
+// Request returns the original incoming request message.
+func (c *containerResponseWriter) Request() *dns.Msg {
+	return c.req
 }
 
 // LocalAddr returns the net.Addr of the server

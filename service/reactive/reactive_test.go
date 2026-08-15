@@ -206,7 +206,7 @@ func TestServeDNS_SkipsNonA(t *testing.T) {
 	}
 }
 
-func TestServeDNS_SkipsReactiveProbe_CD_NoLoop(t *testing.T) {
+func TestServeDNS_SkipsReactiveProbe_EDNS0_NoLoop(t *testing.T) {
 	host := "app.corpplatform.intranet"
 	peers := &fakePeerSource{synced: true, peers: map[string][]Peer{host: {{Name: "eu", IP: "10.0.0.1"}}}}
 	q := &fakeQuerier{results: map[string][]string{host + "|10.0.0.1": {"192.168.1.10"}}}
@@ -214,16 +214,72 @@ func TestServeDNS_SkipsReactiveProbe_CD_NoLoop(t *testing.T) {
 	rec := dnstest.NewRecorder(&test.ResponseWriter{})
 
 	r := query(host, dns.TypeA)
-	r.CheckingDisabled = true // simulate an incoming reactive probe from a sibling cluster
+	setReactiveProbe(r) // simulate an incoming reactive probe from a sibling cluster carrying the EDNS0 option
 	code, _ := s.ServeDNS(context.Background(), rec, r)
 	if code != dns.RcodeSuccess {
 		t.Fatalf("unexpected code=%d", code)
 	}
 	if atomic.LoadInt32(&q.calls) != 0 {
-		t.Fatalf("a CD-marked probe must never trigger a peer query (loop guard)")
+		t.Fatalf("an EDNS0-marked probe must never trigger a peer query (loop guard)")
 	}
 	if rec.Msg != nil {
-		t.Fatalf("a CD-marked probe must pass through untouched")
+		t.Fatalf("an EDNS0-marked probe must pass through untouched")
+	}
+}
+
+func TestServeDNS_ResolvesWhenCheckingDisabledSet(t *testing.T) {
+	host := "app.corpplatform.intranet"
+	peers := &fakePeerSource{synced: true, peers: map[string][]Peer{host: {{Name: "eu", IP: "10.0.0.1"}}}}
+	q := &fakeQuerier{results: map[string][]string{host + "|10.0.0.1": {"192.168.1.10"}}}
+	s := newTestReactive(peers, q)
+	rec := dnstest.NewRecorder(&test.ResponseWriter{})
+
+	r := query(host, dns.TypeA)
+	r.CheckingDisabled = true // legitimate DNSSEC query with CD=1
+	code, err := s.ServeDNS(context.Background(), rec, r)
+	if err != nil || code != dns.RcodeSuccess {
+		t.Fatalf("unexpected code=%d err=%v", code, err)
+	}
+	if atomic.LoadInt32(&q.calls) != 1 {
+		t.Fatalf("queries with CheckingDisabled=true must still be resolved reactively")
+	}
+	if rec.Msg == nil || len(rec.Msg.Answer) != 1 {
+		t.Fatalf("expected 1 A record resolved, got %+v", rec.Msg)
+	}
+}
+
+type fakeContainerWriter struct {
+	dns.ResponseWriter
+	req *dns.Msg
+}
+
+func (f *fakeContainerWriter) Request() *dns.Msg {
+	return f.req
+}
+
+func TestServeDNS_SkipsReactiveProbe_ViaContainerWriter(t *testing.T) {
+	host := "app.corpplatform.intranet"
+	peers := &fakePeerSource{synced: true, peers: map[string][]Peer{host: {{Name: "eu", IP: "10.0.0.1"}}}}
+	q := &fakeQuerier{results: map[string][]string{host + "|10.0.0.1": {"192.168.1.10"}}}
+	s := newTestReactive(peers, q)
+
+	origReq := query(host, dns.TypeA)
+	setReactiveProbe(origReq)
+
+	// Simulate gateway reply (SetReply strips EDNS0 Extra)
+	gatewayReply := new(dns.Msg)
+	gatewayReply.SetReply(origReq)
+	gatewayReply.Rcode = dns.RcodeNameError
+
+	rec := dnstest.NewRecorder(&test.ResponseWriter{})
+	cw := &fakeContainerWriter{ResponseWriter: rec, req: origReq}
+
+	code, _ := s.ServeDNS(context.Background(), cw, gatewayReply)
+	if code != dns.RcodeSuccess {
+		t.Fatalf("unexpected code=%d", code)
+	}
+	if atomic.LoadInt32(&q.calls) != 0 {
+		t.Fatalf("probe identified via container writer Request() must never trigger peer query")
 	}
 }
 

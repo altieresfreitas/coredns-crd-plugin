@@ -46,14 +46,13 @@ func newDNSQuerier(port int, client *dns.Client) *dnsQuerier {
 func (q *dnsQuerier) Query(ctx context.Context, fqdn string, peer Peer) []string {
 	m := new(dns.Msg)
 	m.SetQuestion(dns.Fqdn(fqdn), dns.TypeA)
-	// Loop guard: mark this as a reactive probe. A peer that also misses the
-	// host must NOT reactivate it back towards us. CheckingDisabled is the only
-	// marker (besides RecursionDesired) preserved by dns.Msg.SetReply through
-	// the peer's container pipeline, so the peer's reactive service can detect
-	// and short-circuit it. RecursionDesired is left unset to mirror an
-	// authoritative query.
+	// Loop guard: mark this as a reactive probe using an EDNS0 private option (RFC 6891).
+	// A peer that also misses the host must NOT reactivate it back towards us.
+	// We use an EDNS0 option so standard DNSSEC header flags (like CheckingDisabled)
+	// remain untouched and retain standard semantics. RecursionDesired is left unset
+	// to mirror an authoritative query.
 	m.RecursionDesired = false
-	m.CheckingDisabled = true
+	setReactiveProbe(m)
 	addr := net.JoinHostPort(peer.IP, strconv.Itoa(q.port))
 	resp, _, err := q.client.ExchangeContext(ctx, m, addr)
 	if err != nil {

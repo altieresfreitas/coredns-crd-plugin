@@ -147,9 +147,11 @@ How it works:
   answer complete. Peers are shuffled to spread the load across the fleet, so
   this scales to many clusters without querying every one on each miss.
 * Cross-cluster loops are prevented with a marker: reactive probes are sent with
-  the DNS `CheckingDisabled` (CD) bit set, and the plugin never reactivates a
-  query that already carries CD. So if two clusters both miss the host they do
-  not query each other forever — the probe short-circuits to `NXDOMAIN`.
+  an EDNS0 private option (RFC 6891, Option Code 65001), and the plugin never
+  reactivates a query that carries this marker. This avoids touching standard
+  DNSSEC flags (like `CheckingDisabled` / CD bit). So if two clusters both miss
+  the host they do not query each other forever — the probe short-circuits to
+  `NXDOMAIN`.
 * Results are cached (positive and negative) and concurrent lookups for the
   same host are coalesced.
 * While the `ZoneDelegation` cache is still warming up the plugin returns
